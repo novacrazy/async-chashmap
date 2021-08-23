@@ -5,7 +5,7 @@ use std::sync::{
     Arc,
 };
 
-use tokio::sync::{OwnedRwLockWriteGuard, RwLock, RwLockWriteGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 pub use hashbrown::hash_map::{DefaultHashBuilder, RawEntryMut};
 
@@ -345,6 +345,22 @@ where
             };
         }
 
+        fn pick_indices(len: usize, mut rng: impl Rng) -> (usize, usize) {
+            if len > 2 {
+                let idx_a = rng.gen_range(0..len);
+
+                loop {
+                    let idx_b = rng.gen_range(0..len);
+
+                    if idx_b != idx_a {
+                        return (idx_a, idx_b);
+                    }
+                }
+            } else {
+                (0, 1)
+            }
+        }
+
         'first: while self.size() > 0 {
             non_empty.extend(self.non_empty_shards());
             non_empty.shuffle(&mut rng);
@@ -377,23 +393,7 @@ where
                         res
                     },
                     len @ _ => {
-                        let elem_a_idx;
-                        let mut elem_b_idx;
-
-                        if len > 2 {
-                            elem_a_idx = rng.gen_range(0..len);
-
-                            loop {
-                                elem_b_idx = rng.gen_range(0..len);
-
-                                if elem_b_idx != elem_a_idx {
-                                    break;
-                                }
-                            }
-                        } else {
-                            elem_a_idx = 0;
-                            elem_b_idx = 1;
-                        }
+                        let (elem_a_idx, elem_b_idx) = pick_indices(len, &mut rng);
 
                         unsafe {
                             let ts_a = &shard_a.entries.get_unchecked(elem_a_idx).value.timestamp;
@@ -442,23 +442,7 @@ where
 
                 let sample_range = shard_a_len + shard_b_len;
 
-                let elem_a_range_idx;
-                let mut elem_b_range_idx;
-
-                if sample_range > 2 {
-                    elem_a_range_idx = rng.gen_range(0..sample_range);
-
-                    // pick another element
-                    loop {
-                        elem_b_range_idx = rng.gen_range(0..sample_range);
-                        if elem_b_range_idx != elem_a_range_idx {
-                            break;
-                        }
-                    }
-                } else {
-                    elem_a_range_idx = 0;
-                    elem_b_range_idx = 1;
-                }
+                let (elem_a_range_idx, elem_b_range_idx) = pick_indices(sample_range, &mut rng);
 
                 unsafe {
                     let ts_a = if elem_a_range_idx < shard_a_len {

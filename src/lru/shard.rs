@@ -75,11 +75,6 @@ impl<K, V> IndexedShard<K, V> {
         self.indices.len()
     }
 
-    #[inline]
-    pub(crate) fn at(&self, idx: usize) -> &V {
-        &self.entries[idx].value
-    }
-
     /// Append a key-value pair, *without* checking whether it already exists,
     /// and return the pair's new index.
     #[inline]
