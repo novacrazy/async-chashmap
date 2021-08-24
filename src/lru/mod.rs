@@ -297,6 +297,12 @@ where
             })
     }
 
+    /// Fair element eviction based on 2-random sampling of two shards at once, and performs a random walk through
+    /// all shards as necessary to remain unbiased.
+    ///
+    /// NOTE: This method acquires one write lock per element, and can be inefficient for many evictions.
+    ///
+    /// If you want fair eviction of a handful of items, this is the method to use. For less-predictable bulk-eviction look at `evict_many_fast`
     pub async fn evict<F>(&self, mut rng: impl Rng, mut predicate: F) -> Vec<(K, V)>
     where
         F: FnMut(&K, &mut V) -> Evict,
@@ -343,22 +349,6 @@ where
                     }
                 }
             };
-        }
-
-        fn pick_indices(len: usize, mut rng: impl Rng) -> (usize, usize) {
-            if len > 2 {
-                let idx_a = rng.gen_range(0..len);
-
-                loop {
-                    let idx_b = rng.gen_range(0..len);
-
-                    if idx_b != idx_a {
-                        return (idx_a, idx_b);
-                    }
-                }
-            } else {
-                (0, 1)
-            }
         }
 
         'evict: while self.size() > 0 {
@@ -511,6 +501,12 @@ where
         evicted
     }
 
+    /// Fairly evict many elements, based on 2-random sampling of two shards at once, and performs a random walk through
+    /// all shards as necessary to remain unbiased.
+    ///
+    /// NOTE: This method acquires one write lock per element, and can be inefficient for many evictions.
+    ///
+    /// If you want fair eviction of a handful of items, this is the method to use. For less-predictable bulk-eviction look at `evict_many_fast`
     pub async fn evict_many(&self, mut count: usize, rng: impl Rng) -> Vec<(K, V)> {
         count = count.min(self.size());
 
@@ -531,8 +527,95 @@ where
         .await
     }
 
+    // Fairly evict one element
     pub async fn evict_one(&self, rng: impl Rng) -> Option<(K, V)> {
         self.evict(rng, |_, _| Evict::Once).await.pop()
+    }
+
+    /// Less-fair and less-predictable algorithm that only acquires shard locks once at most,
+    /// but may not evict the exact number of requested elements (a couple more or less)
+    ///
+    /// Compare to `evict` or `evict_many` that acquires a shard lock *per-item evicted*,
+    /// but is more fair and unbiased in doing so.
+    pub async fn evict_many_fast(&self, mut count: usize, mut rng: impl Rng) -> Vec<(K, V)> {
+        use rand::prelude::SliceRandom;
+
+        count = count.min(self.size());
+
+        let mut evicted = Vec::new();
+
+        if count == 0 {
+            return evicted;
+        }
+
+        let mut non_empty = Vec::with_capacity(self.shards.len());
+        non_empty.extend(self.non_empty_shards());
+        non_empty.shuffle(&mut rng);
+
+        fn proportion_of(size: usize, len: usize, count: usize) -> usize {
+            // `len / size` is the fraction this shard holds of the entire structure, between 0 and 1
+            // so `count * fraction` is the number of elements to be taken from this shard
+            // reorganize to avoid floating point, at the cost of 128-bit ints
+            ((count as u128 * len as u128) / size as u128) as usize + 1
+        }
+
+        let size = self.size();
+
+        let mut sum = 0;
+        for shard in non_empty {
+            let mut shard = shard.write().await;
+
+            if shard.len() == 0 {
+                continue;
+            }
+
+            let mut sub_count = proportion_of(size, shard.len(), count);
+            sum += sub_count;
+
+            if sum > count {
+                sub_count = sum - count - 1;
+            }
+
+            if sub_count == shard.len() {
+                // fast path for evicting all of this shard
+                evicted.extend(
+                    shard
+                        .entries
+                        .drain(..)
+                        .map(|bucket| (bucket.key, bucket.value.value)),
+                );
+
+                shard.indices.clear();
+                self.size.fetch_sub(sub_count, Ordering::SeqCst); // sub_count == shard.len() here
+            } else {
+                for _ in 0..sub_count {
+                    let (elem_a_idx, elem_b_idx) = pick_indices(shard.len(), &mut rng);
+
+                    unsafe {
+                        let ts_a = &shard.entries.get_unchecked(elem_a_idx).value.timestamp;
+                        let ts_b = &shard.entries.get_unchecked(elem_b_idx).value.timestamp;
+
+                        let idx = if ts_a.is_before(ts_b) {
+                            elem_a_idx
+                        } else {
+                            elem_b_idx
+                        };
+
+                        evicted.push({
+                            let (key, value) = shard.swap_remove_index_raw(idx);
+                            self.size.fetch_sub(1, Ordering::SeqCst);
+                            (key, value.value)
+                        });
+                    }
+                }
+            }
+
+            if sum > count {
+                break;
+            }
+        }
+
+        evicted
     }
 }
 
@@ -544,4 +627,23 @@ pub enum Evict {
     Once,
     /// Do not evict this item nor any more others
     None,
+}
+
+fn pick_indices(len: usize, mut rng: impl Rng) -> (usize, usize) {
+    match len {
+        0 => panic!("Invalid length"),
+        1 => (0, 0),
+        2 => (0, 1),
+        _ => {
+            let idx_a = rng.gen_range(0..len);
+
+            loop {
+                let idx_b = rng.gen_range(0..len);
+
+                if idx_b != idx_a {
+                    return (idx_a, idx_b);
+                }
+            }
+        }
+    }
 }
