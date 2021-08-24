@@ -168,7 +168,7 @@ impl<K, V> IndexedShard<K, V> {
 
     #[inline]
     pub(crate) unsafe fn swap_remove_index_raw(&mut self, index: usize) -> (K, V) {
-        debug_assert!(index < self.len());
+        debug_assert!(index < self.len(), "index {} < {} length", index, self.len());
 
         let hash = self.entries.get_unchecked(index).hash;
 

@@ -361,143 +361,150 @@ where
             }
         }
 
-        'first: while self.size() > 0 {
+        'evict: while self.size() > 0 {
             non_empty.extend(self.non_empty_shards());
             non_empty.shuffle(&mut rng);
 
             let mut shard_a = match pop_shard!() {
                 Some(shard) => shard,
                 // if we couldn't find an actual non-empty shard, go back to `while size > 0`, and if there is still one, sample it.
-                None => continue 'first,
+                None => continue 'evict,
             };
 
-            // handle one-shard case
-            if non_empty.is_empty() {
-                let res = match shard_a.len() {
-                    1 => unsafe {
+            'walk: loop {
+                match pop_shard!() {
+                    None => {
+                        // single-shard case
+                        let res = match shard_a.len() {
+                            1 => unsafe {
+                                let shard::Bucket {
+                                    ref key,
+                                    ref mut value,
+                                    ..
+                                } = shard_a.entries.get_unchecked_mut(0);
+
+                                let res = predicate(key, &mut value.value);
+
+                                if matches!(res, Evict::Continue | Evict::Once) {
+                                    shard_a.indices.clear();
+                                    let shard::Bucket { key, value, .. } = shard_a.entries.pop().unwrap();
+                                    self.size.fetch_sub(1, Ordering::SeqCst);
+                                    evicted.push((key, value.value));
+                                }
+
+                                res
+                            },
+                            len @ _ => unsafe {
+                                let (elem_a_idx, elem_b_idx) = pick_indices(len, &mut rng);
+
+                                let ts_a = &shard_a.entries.get_unchecked(elem_a_idx).value.timestamp;
+                                let ts_b = &shard_a.entries.get_unchecked(elem_b_idx).value.timestamp;
+                                let idx = if ts_a.is_before(ts_b) {
+                                    elem_a_idx
+                                } else {
+                                    elem_b_idx
+                                };
+
+                                let shard::Bucket {
+                                    ref key,
+                                    ref mut value,
+                                    ..
+                                } = shard_a.entries.get_unchecked_mut(idx);
+
+                                let res = predicate(key, &mut value.value);
+
+                                if matches!(res, Evict::Continue | Evict::Once) {
+                                    let (key, value) = shard_a.swap_remove_index_raw(idx);
+                                    self.size.fetch_sub(1, Ordering::SeqCst);
+                                    evicted.push((key, value.value));
+                                }
+
+                                res
+                            },
+                        };
+
+                        if matches!(res, Evict::Once | Evict::None) {
+                            break 'evict;
+                        }
+
+                        // since pop_shard!() returned None, there is no point in looping again,
+                        // so try to refresh the non_empty shard list
+                        continue 'evict;
+                    }
+                    Some(mut shard_b) => unsafe {
+                        // two-shard case
+
+                        let shard_a_len = shard_a.len();
+                        let shard_b_len = shard_b.len();
+
+                        debug_assert!(shard_a_len > 0);
+                        debug_assert!(shard_b_len > 0);
+
+                        let sample_range = shard_a_len + shard_b_len;
+
+                        let (elem_a_range_idx, elem_b_range_idx) = pick_indices(sample_range, &mut rng);
+
+                        let ts_a = if elem_a_range_idx < shard_a_len {
+                            &shard_a.entries.get_unchecked(elem_a_range_idx).value.timestamp
+                        } else {
+                            &shard_b
+                                .entries
+                                .get_unchecked(elem_a_range_idx - shard_a_len)
+                                .value
+                                .timestamp
+                        };
+
+                        let ts_b = if elem_b_range_idx < shard_a_len {
+                            &shard_a.entries.get_unchecked(elem_b_range_idx).value.timestamp
+                        } else {
+                            &shard_b
+                                .entries
+                                .get_unchecked(elem_b_range_idx - shard_a_len)
+                                .value
+                                .timestamp
+                        };
+
+                        let elem_range_idx = if ts_a.is_before(ts_b) {
+                            elem_a_range_idx
+                        } else {
+                            elem_b_range_idx
+                        };
+
+                        let (shard, idx) = if elem_range_idx < shard_a_len {
+                            (&mut shard_a, elem_range_idx)
+                        } else {
+                            (&mut shard_b, elem_range_idx - shard_a_len)
+                        };
+
                         let shard::Bucket {
                             ref key,
                             ref mut value,
                             ..
-                        } = shard_a.entries.get_unchecked_mut(0);
+                        } = shard.entries.get_unchecked_mut(idx);
 
                         let res = predicate(key, &mut value.value);
 
                         if matches!(res, Evict::Continue | Evict::Once) {
-                            shard_a.indices.clear();
-                            let shard::Bucket { key, value, .. } = shard_a.entries.pop().unwrap();
+                            let (key, value) = shard.swap_remove_index_raw(idx);
                             self.size.fetch_sub(1, Ordering::SeqCst);
                             evicted.push((key, value.value));
                         }
 
-                        res
-                    },
-                    len @ _ => {
-                        let (elem_a_idx, elem_b_idx) = pick_indices(len, &mut rng);
-
-                        unsafe {
-                            let ts_a = &shard_a.entries.get_unchecked(elem_a_idx).value.timestamp;
-                            let ts_b = &shard_a.entries.get_unchecked(elem_b_idx).value.timestamp;
-                            let idx = if ts_a.is_before(ts_b) {
-                                elem_a_idx
-                            } else {
-                                elem_b_idx
-                            };
-
-                            let shard::Bucket {
-                                ref key,
-                                ref mut value,
-                                ..
-                            } = shard_a.entries.get_unchecked_mut(idx);
-
-                            let res = predicate(key, &mut value.value);
-
-                            if matches!(res, Evict::Continue | Evict::Once) {
-                                let (key, value) = shard_a.swap_remove_index_raw(idx);
-                                self.size.fetch_sub(1, Ordering::SeqCst);
-                                evicted.push((key, value.value));
-                            }
-
-                            res
+                        if matches!(res, Evict::None | Evict::Once) {
+                            break 'evict;
                         }
-                    }
-                };
 
-                if matches!(res, Evict::Once | Evict::None) {
-                    break 'first;
+                        shard_a = shard_b; // do random walk A->B, B->C, etc.
+                    },
                 }
 
-                continue;
-            }
-
-            'second: while non_empty.len() > 0 {
-                // same method as above to get a non-empty shard
-                let mut shard_b = match pop_shard!() {
-                    Some(shard) => shard,
-                    None => break 'second,
-                };
-
-                let shard_a_len = shard_a.len();
-                let shard_b_len = shard_b.len();
-
-                let sample_range = shard_a_len + shard_b_len;
-
-                let (elem_a_range_idx, elem_b_range_idx) = pick_indices(sample_range, &mut rng);
-
-                unsafe {
-                    let ts_a = if elem_a_range_idx < shard_a_len {
-                        &shard_a.entries.get_unchecked(elem_a_range_idx).value.timestamp
-                    } else {
-                        &shard_b
-                            .entries
-                            .get_unchecked(elem_a_range_idx - shard_a_len)
-                            .value
-                            .timestamp
+                // if the former shard_b was emptied by the eviction, then try to find a new one before continuing
+                if shard_a.len() == 0 {
+                    shard_a = match pop_shard!() {
+                        Some(shard) => shard,
+                        None => break 'walk,
                     };
-
-                    let ts_b = if elem_b_range_idx < shard_a_len {
-                        &shard_a.entries.get_unchecked(elem_b_range_idx).value.timestamp
-                    } else {
-                        &shard_b
-                            .entries
-                            .get_unchecked(elem_b_range_idx - shard_a_len)
-                            .value
-                            .timestamp
-                    };
-
-                    let elem_range_idx = if ts_a.is_before(ts_b) {
-                        elem_a_range_idx
-                    } else {
-                        elem_b_range_idx
-                    };
-
-                    let (shard, idx) = if elem_range_idx < shard_a_len {
-                        (&mut shard_a, elem_range_idx)
-                    } else {
-                        (&mut shard_b, elem_range_idx - shard_a_len)
-                    };
-
-                    let shard::Bucket {
-                        ref key,
-                        ref mut value,
-                        ..
-                    } = shard.entries.get_unchecked_mut(idx);
-
-                    let res = predicate(key, &mut value.value);
-
-                    if matches!(res, Evict::Continue | Evict::Once) {
-                        let (key, value) = shard.swap_remove_index_raw(idx);
-                        self.size.fetch_sub(1, Ordering::SeqCst);
-                        evicted.push((key, value.value));
-                    }
-
-                    if matches!(res, Evict::None | Evict::Once) {
-                        break 'first;
-                    }
                 }
-
-                // shard_a <- shard_b, unlock shard_a
-                drop(std::mem::replace(&mut shard_a, shard_b));
             }
         }
 
