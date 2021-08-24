@@ -217,6 +217,16 @@ where
             .map(|tv| ReadHandle::map(tv, |tv| &tv.value))
     }
 
+    pub async fn peek_mut<Q: ?Sized>(&self, key: &Q) -> Option<WriteHandle<impl Erased, V>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self.get_mut_raw(key)
+            .await
+            .map(|tv| WriteHandle::map(tv, |tv| &mut tv.value))
+    }
+
     pub async fn get<Q: ?Sized>(&self, key: &Q) -> Option<ReadHandle<impl Erased, V>>
     where
         K: Borrow<Q>,
