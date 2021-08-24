@@ -7,7 +7,7 @@ use std::sync::{
 
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
-pub use hashbrown::hash_map::{DefaultHashBuilder, RawEntryMut};
+use hashbrown::hash_map::DefaultHashBuilder;
 
 use rand::Rng;
 
