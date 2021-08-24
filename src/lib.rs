@@ -58,6 +58,31 @@ where
 
 impl<K, T, S> CHashMap<K, T, S>
 where
+    K: Clone,
+    T: Clone,
+    S: Clone,
+{
+    /// Duplicates/Clones the CHashMap. A CHashMap cannot be cloned regularly due to internal async locking.
+    pub async fn duplicate(&self) -> Self {
+        let mut shards = Vec::with_capacity(self.shards.len());
+        let mut size = 0;
+
+        for shard in &self.shards {
+            let shard = shard.read().await.clone();
+            size += shard.len();
+            shards.push(Arc::new(RwLock::new(shard)));
+        }
+
+        CHashMap {
+            shards,
+            hash_builder: self.hash_builder.clone(),
+            size: AtomicUsize::new(size),
+        }
+    }
+}
+
+impl<K, T, S> CHashMap<K, T, S>
+where
     K: Hash + Eq,
     S: BuildHasher,
 {
