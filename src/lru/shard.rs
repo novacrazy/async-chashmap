@@ -75,6 +75,11 @@ impl<K, V> IndexedShard<K, V> {
         self.indices.len()
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.indices.clear();
+    }
+
     /// Append a key-value pair, *without* checking whether it already exists,
     /// and return the pair's new index.
     #[inline]

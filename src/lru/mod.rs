@@ -171,6 +171,16 @@ where
         }
     }
 
+    pub async fn clear(&self) {
+        for (shard, _) in &self.shards {
+            let mut shard = shard.write().await;
+            let len = shard.len();
+            shard.clear();
+
+            self.size.fetch_sub(len, Ordering::SeqCst);
+        }
+    }
+
     #[inline]
     fn hash_and_shard<Q: ?Sized>(&self, key: &Q) -> (u64, usize)
     where
