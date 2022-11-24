@@ -21,7 +21,7 @@ pub struct CHashMap<K, T, S = DefaultHashBuilder> {
 
 impl<K, T> CHashMap<K, T, DefaultHashBuilder> {
     pub fn new(num_shards: usize) -> Self {
-        Self::with_hasher(num_shards, DefaultHashBuilder::new())
+        Self::with_hasher(num_shards, DefaultHashBuilder::default())
     }
 }
 

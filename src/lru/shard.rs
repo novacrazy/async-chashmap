@@ -49,7 +49,7 @@ where
         impl fmt::Debug for DebugIndices<'_> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 // SAFETY: we're not letting any of the buckets escape this function
-                let indices = unsafe { self.0.iter().map(|raw_bucket| raw_bucket.read()) };
+                let indices = unsafe { self.0.iter().map(|raw_bucket| *raw_bucket.as_ref()) };
                 f.debug_list().entries(indices).finish()
             }
         }

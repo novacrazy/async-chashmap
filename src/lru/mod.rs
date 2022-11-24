@@ -75,7 +75,7 @@ pub struct LruCache<K, V, T = AtomicInstant, S = DefaultHashBuilder> {
 
 impl<K, V, T> LruCache<K, V, T, DefaultHashBuilder> {
     pub fn new(num_shards: usize) -> Self {
-        Self::with_hasher(num_shards, DefaultHashBuilder::new())
+        Self::with_hasher(num_shards, DefaultHashBuilder::default())
     }
 }
 
